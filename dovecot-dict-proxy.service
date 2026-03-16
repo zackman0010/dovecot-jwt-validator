@@ -1,0 +1,30 @@
+[Unit]
+Description=Dovecot Dict Proxy (JWKS key lookup)
+Documentation=https://doc.dovecot.org/developer_manual/design/dict_protocol/
+# Dovecot depends on this service — start us first, stop us last
+Before=dovecot.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dovecot-dict-proxy \
+    --config /etc/dovecot/jwks.conf \
+    --output /etc/dovecot/dovecot-oauth2.conf.ext
+
+Restart=on-failure
+RestartSec=5s
+
+# Run as the dovecot user so the Unix socket is accessible to Dovecot
+User=dovecot
+Group=dovecot
+
+# Harden the service
+PrivateTmp=true
+ProtectSystem=full
+NoNewPrivileges=true
+
+[Install]
+# Pulling this unit into dovecot.service's dependency graph causes systemd to
+# start it automatically whenever Dovecot is started or enabled.
+RequiredBy=dovecot.service
