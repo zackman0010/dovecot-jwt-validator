@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 )
 
 // Server holds the configuration needed to run the Dict protocol listener.
@@ -158,6 +159,10 @@ func isSupportedVersion(major, minor string) bool {
 // The azp is validated against the configured OAuthClientID. The alg and kid
 // are used together to find the matching key in the JWKS response.
 func (s *Server) handleLookup(conn net.Conn, line string) {
+	// Record the start time immediately — this is the beginning of the lookup
+	// as far as Dovecot is concerned.
+	start := time.Now()
+
 	// line[1:] slices off the leading 'L', giving us "<key>\t<user>".
 	// SplitN limits the split to at most 2 parts so a tab inside the user
 	// field wouldn't cause extra splits — equivalent to split("\t", 2) in Kotlin.
@@ -181,7 +186,8 @@ func (s *Server) handleLookup(conn net.Conn, line string) {
 	// means validation is intentionally skipped.
 	if s.OAuthClientID != "" && azp != s.OAuthClientID {
 		log.Printf("azp %q does not match configured oauth_client_id", azp)
-		fmt.Fprintf(conn, "N\n")
+		end := time.Now()
+		fmt.Fprintf(conn, "N%s", timingFields(start, end))
 		return
 	}
 
@@ -192,12 +198,62 @@ func (s *Server) handleLookup(conn net.Conn, line string) {
 		return
 	}
 
+	end := time.Now()
+
 	if cert == "" {
-		fmt.Fprintf(conn, "N\n")
+		fmt.Fprintf(conn, "N%s", timingFields(start, end))
 		return
 	}
 
-	fmt.Fprintf(conn, "O%s\n", cert)
+	fmt.Fprintf(conn, "O%s%s", dictEscape(cert), timingFields(start, end))
+}
+
+// dictEscape applies the Dovecot Dict protocol value escaping rules.
+// The escape character is \001; the following characters are replaced:
+//
+//	\001 → \001 + '1'   (must be first to avoid double-escaping)
+//	NUL  → \001 + '0'
+//	\t   → \001 + 't'
+//	\r   → \001 + 'r'
+//	\n   → \001 + 'l'
+func dictEscape(s string) string {
+	// strings.NewReplacer applies all substitutions in a single pass, but
+	// because \001 must be replaced before the others we use a manual builder
+	// to guarantee ordering.
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\x01':
+			sb.WriteString("\x01" + "1")
+		case '\x00':
+			sb.WriteString("\x01" + "0")
+		case '\t':
+			sb.WriteString("\x01" + "t")
+		case '\r':
+			sb.WriteString("\x01" + "r")
+		case '\n':
+			sb.WriteString("\x01" + "l")
+		default:
+			sb.WriteByte(s[i])
+		}
+	}
+	return sb.String()
+}
+
+// timingFields formats start and end times as the tab-separated timestamp
+// suffix the Dovecot Dict protocol appends to LOOKUP responses:
+//
+//	\t<startSecond>\t<startUSecond>\t<endSecond>\t<endUSecond>\n
+//
+// Each timestamp is split into its Unix seconds component and its microseconds
+// component (the sub-second remainder, 0–999999).
+func timingFields(start, end time.Time) string {
+	startSec := start.Unix()
+	startUsec := int64(start.Nanosecond()) / 1000
+	endSec := end.Unix()
+	endUsec := int64(end.Nanosecond()) / 1000
+	return fmt.Sprintf("\t%d\t%d\t%d\t%d\n", startSec, startUsec, endSec, endUsec)
 }
 
 // parseKey parses a key in the form /shared/<azp>/<alg>/<kid> and returns its

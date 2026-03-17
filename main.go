@@ -12,15 +12,19 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 )
 
-// //go:embed is a compiler directive that reads the file at build time and
-// stores its contents in the variable below. The template is baked into the
-// binary — no separate file needs to be deployed alongside it.
+// Both templates are compiled into the binary at build time. The correct one
+// is selected at runtime based on the detected Dovecot version.
 //
-//go:embed dovecot-oauth-conf.template
-var configTemplate string
+//go:embed dovecot-oauth-conf-2.3.template
+var configTemplate23 string
+
+//go:embed dovecot-oauth-conf-2.4.template
+var configTemplate24 string
 
 // main() is the entry point, equivalent to fun main() in Kotlin.
 func main() {
@@ -28,7 +32,7 @@ func main() {
 	// flag.String registers a string flag and returns a *string (pointer).
 	// The arguments are: flag name, default value, help text.
 	configPath := flag.String("config", config.DefaultConfigPath, "path to the key=value config file")
-	outputPath := flag.String("output", "/etc/dovecot/dovecot-oauth2.conf.ext", "path to write the rendered Dovecot OAuth2 config")
+	outputPath := flag.String("output", "/var/dovecot-jwks/dovecot-oauth2.conf.ext", "path to write the rendered Dovecot OAuth2 config")
 	// flag.Parse() actually reads os.Args and populates the registered flags.
 	flag.Parse()
 
@@ -42,7 +46,17 @@ func main() {
 		log.Fatalf("configuration error: %v", err)
 	}
 
-	if err := renderTemplate(*outputPath, cfg); err != nil {
+	major, minor, patch, err := dovecotVersion()
+	if err != nil {
+		log.Fatalf("detecting Dovecot version: %v", err)
+	}
+	log.Printf("detected Dovecot version %d.%d.%d", major, minor, patch)
+
+	if err := validateDovecotVersion(major, minor, patch); err != nil {
+		log.Fatalf("version check failed: %v", err)
+	}
+
+	if err := renderTemplate(*outputPath, cfg, major, minor); err != nil {
 		log.Fatalf("rendering output config: %v", err)
 	}
 
@@ -61,20 +75,96 @@ func main() {
 	}
 }
 
-// renderTemplate substitutes ${oidc_url} and ${socket_path} placeholders in
-// the embedded template, then writes the result to the destination path.
+// dovecotVersion runs "dovecot --version" and returns the major, minor, and
+// patch version numbers. The output format is "2.3.21 (abc123ef4)" — we parse
+// the first three dot-separated components.
+//
+// exec.Command is Go's equivalent of ProcessBuilder in Java/Kotlin.
+// Output() runs the command and returns its stdout as a []byte.
+func dovecotVersion() (major, minor, patch int, err error) {
+	out, err := exec.Command("dovecot", "--version").Output()
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("running 'dovecot --version': %w", err)
+	}
+
+	// strings.Fields splits on any whitespace — equivalent to Kotlin's split("\\s+".toRegex()).
+	// The version string is the first token, e.g. "2.3.21".
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return 0, 0, 0, fmt.Errorf("unexpected empty output from 'dovecot --version'")
+	}
+
+	parts := strings.SplitN(fields[0], ".", 3)
+	if len(parts) < 3 {
+		return 0, 0, 0, fmt.Errorf("cannot parse version %q", fields[0])
+	}
+
+	// strconv.Atoi converts a string to an int — equivalent to toInt() in Kotlin.
+	major, err = strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("cannot parse major version from %q", fields[0])
+	}
+	minor, err = strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("cannot parse minor version from %q", fields[0])
+	}
+	patch, err = strconv.Atoi(parts[2])
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("cannot parse patch version from %q", fields[0])
+	}
+
+	return major, minor, patch, nil
+}
+
+// validateDovecotVersion returns an error if the given version is older than
+// 2.3.17, which is the minimum version that supports the required dict protocol.
+func validateDovecotVersion(major, minor, patch int) error {
+	// Compare as a single integer triplet for clarity.
+	// 2.3.17 → major=2, minor=3, patch=17
+	const (
+		minMajor = 2
+		minMinor = 3
+		minPatch = 17
+	)
+	if major > minMajor {
+		return nil
+	}
+	if major == minMajor && minor > minMinor {
+		return nil
+	}
+	if major == minMajor && minor == minMinor && patch >= minPatch {
+		return nil
+	}
+	return fmt.Errorf(
+		"Dovecot %d.%d.%d is not supported; minimum required version is %d.%d.%d",
+		major, minor, patch, minMajor, minMinor, minPatch,
+	)
+}
+
+// renderTemplate selects the appropriate embedded template for the detected
+// Dovecot version, substitutes ${oidc_url} and ${socket_path}, and writes the
+// result to the destination path.
 //
 // In Go, functions are declared with func, return types come after the
 // parameter list, and multiple return values are common (here: nothing + error).
-func renderTemplate(dst string, cfg *config.Config) error {
+func renderTemplate(dst string, cfg *config.Config, major, minor int) error {
+	// Select the template based on Dovecot's major.minor version.
+	// Dovecot 2.3 uses a flat key; 2.4+ uses a nested block syntax.
+	var tmpl string
+	if major < 2 || (major == 2 && minor <= 3) {
+		tmpl = configTemplate23
+	} else {
+		tmpl = configTemplate24
+	}
+
 	// strings.NewReplacer takes pairs of (old, new) strings and applies all
 	// substitutions in a single pass — similar to calling replace() chained
 	// in Kotlin but more efficient.
 	replacer := strings.NewReplacer(
-		"${oidc_url}",    cfg.OIDCUrl,
+		"${oidc_url}", cfg.OIDCUrl,
 		"${socket_path}", cfg.SocketPath,
 	)
-	rendered := replacer.Replace(configTemplate)
+	rendered := replacer.Replace(tmpl)
 
 	// Remove the existing file if present so we always write a fresh copy.
 	// os.IsNotExist lets us ignore the error when the file simply didn't exist
@@ -88,6 +178,6 @@ func renderTemplate(dst string, cfg *config.Config) error {
 		return fmt.Errorf("writing output file %s: %w", dst, err)
 	}
 
-	log.Printf("wrote Dovecot OAuth2 config to %s", dst)
+	log.Printf("wrote Dovecot %d.%d OAuth2 config to %s", major, minor, dst)
 	return nil // nil is Go's equivalent of returning null for an error — means "no error"
 }

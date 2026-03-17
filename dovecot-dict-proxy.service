@@ -10,7 +10,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/local/bin/dovecot-dict-proxy \
     --config /etc/dovecot/jwks.conf \
-    --output /etc/dovecot/dovecot-oauth2.conf.ext
+    --output /var/dovecot-jwks/dovecot-oauth2.conf.ext
 
 Restart=on-failure
 RestartSec=5s
@@ -22,6 +22,7 @@ Group=dovecot
 # Harden the service
 PrivateTmp=true
 ProtectSystem=full
+ReadWritePaths=/etc/dovecot
 NoNewPrivileges=true
 
 [Install]

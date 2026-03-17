@@ -1,0 +1,4 @@
+openid_configuration_url = "${oidc_url}"
+introspection_mode = local
+username_attribute = email
+local_validation_key_dict = proxy:${socket_path}:jwks
