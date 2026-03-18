@@ -4,11 +4,13 @@
 package jwks
 
 import (
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -97,9 +99,12 @@ func LookupX5C(jwksUri, kid, alg string) (string, error) {
 			if len(key.X5C) == 0 {
 				return "", fmt.Errorf("key kid=%q alg=%q has an empty x5c array", kid, alg)
 			}
-			pem := toPEM(key.X5C[0])
-			cacheSet(cacheKey, pem)
-			return pem, nil
+			pub, err := extractPublicKeyPEM(key.X5C[0])
+			if err != nil {
+				return "", fmt.Errorf("key kid=%q alg=%q: %w", kid, alg, err)
+			}
+			cacheSet(cacheKey, pub)
+			return pub, nil
 		}
 	}
 
@@ -128,27 +133,31 @@ func cacheSet(key, pem string) {
 	cacheMu.Unlock()
 }
 
-// toPEM wraps a bare base64 certificate string in PEM header/footer lines and
-// wraps the base64 content at 64 characters per line, as required by RFC 7468.
+// extractPublicKeyPEM decodes a base64-encoded DER certificate from a JWK x5c
+// array entry, parses the X.509 certificate, and returns the public key as a
+// PEM-encoded PKIX public key block ("-----BEGIN PUBLIC KEY-----").
 //
-// strings.Builder is Go's equivalent of StringBuilder in Kotlin/Java — it
-// accumulates string segments efficiently without allocating intermediate strings.
-func toPEM(b64 string) string {
-	const lineLen = 64
-	var sb strings.Builder
-	sb.WriteString("-----BEGIN CERTIFICATE-----\n")
-	// Slice the base64 string into 64-character chunks. b64[:lineLen] takes
-	// the first 64 bytes; b64 = b64[lineLen:] advances the "window" forward —
-	// equivalent to substring() in a loop in Kotlin.
-	for len(b64) > lineLen {
-		sb.WriteString(b64[:lineLen])
-		sb.WriteByte('\n')
-		b64 = b64[lineLen:]
+// Dovecot's dcrypt library expects a "BEGIN PUBLIC KEY" (SubjectPublicKeyInfo)
+// PEM block for local JWT validation key loading.
+func extractPublicKeyPEM(b64cert string) (string, error) {
+	der, err := base64.StdEncoding.DecodeString(b64cert)
+	if err != nil {
+		return "", fmt.Errorf("decoding x5c base64: %w", err)
 	}
-	if len(b64) > 0 {
-		sb.WriteString(b64)
-		sb.WriteByte('\n')
+
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return "", fmt.Errorf("parsing x5c certificate: %w", err)
 	}
-	sb.WriteString("-----END CERTIFICATE-----\n")
-	return sb.String()
+
+	pubDER, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		return "", fmt.Errorf("marshalling public key: %w", err)
+	}
+
+	block := pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: pubDER,
+	})
+	return string(block), nil
 }

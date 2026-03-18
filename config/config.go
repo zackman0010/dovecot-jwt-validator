@@ -24,6 +24,7 @@ type Config struct {
 	SocketPath string
 	ClientID   string // optional; empty means azp validation is skipped
 	Scopes     string // space-separated required scopes; defaults to "openid email"
+	Debug      bool   // optional; enables verbose request/response logging
 }
 
 // Load reads a key=value config file at the given path, fetches the OpenID
@@ -70,6 +71,7 @@ func Load(path string) (*Config, error) {
 		SocketPath: socketPath,
 		ClientID:   values["client_id"], // missing key returns "" (zero value for string)
 		Scopes:     scopes,
+		Debug:      values["debug"] == "true",
 	}, nil
 }
 

@@ -20,6 +20,7 @@ type Server struct {
 	SocketPath    string
 	JWKSUri       string
 	OAuthClientID string
+	Debug         bool
 }
 
 // ListenAndServe removes any stale socket file, binds the Unix domain socket,
@@ -39,6 +40,7 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", s.SocketPath, err)
 	}
+	//goland:noinspection GoUnhandledErrorResult
 	defer ln.Close()
 
 	// Make the socket group-writable so that any process running as the
@@ -72,6 +74,7 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) handleConnection(conn net.Conn) {
 	// defer conn.Close() ensures the connection is closed when this function
 	// returns, no matter which code path exits — like Kotlin's use {} block.
+	//goland:noinspection GoUnhandledErrorResult
 	defer conn.Close()
 
 	// bufio.NewScanner wraps the connection in a buffered line reader,
@@ -84,6 +87,10 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
+		if s.Debug {
+			log.Printf("DEBUG recv: %q", line)
+		}
+
 		// The Dovecot Dict protocol prefixes each command with a single
 		// character. line[0] indexes the first byte of the string — Go
 		// strings are byte slices, so this gives us the ASCII value.
@@ -92,13 +99,15 @@ func (s *Server) handleConnection(conn net.Conn) {
 		case 'H': // HELLO — version negotiation
 			// handleHello returns false if the version is rejected, in which
 			// case we return from this function, triggering defer conn.Close().
-			if !s.handleHello(conn, line) {
+			if !s.handleHello(line) {
 				return
 			}
 		case 'L': // LOOKUP — key fetch
 			s.handleLookup(conn, line)
 		default:
 			// Unknown or unimplemented command (e.g. ITERATE)
+			log.Printf("unknown command: %q", line)
+			//goland:noinspection GoUnhandledErrorResult
 			fmt.Fprintf(conn, "FUnsupported command\n")
 		}
 	}
@@ -114,13 +123,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 //
 // HELLO format: H<major>\t<minor>\t<valueType>\t<obsolete>\t<dictName>
 // Supported versions: 3.2 and 4.0
-func (s *Server) handleHello(conn net.Conn, line string) bool {
+func (s *Server) handleHello(line string) bool {
 	// strings.Split is equivalent to Kotlin's split(). It returns a []string
 	// (string slice) — Go's equivalent of List<String>.
 	parts := strings.Split(line, "\t")
 	if len(parts) < 2 {
 		log.Printf("malformed HELLO: %q", line)
-		fmt.Fprintf(conn, "FMalformed command\n")
 		return false
 	}
 
@@ -132,14 +140,12 @@ func (s *Server) handleHello(conn net.Conn, line string) bool {
 
 	if !isSupportedVersion(major, minor) {
 		log.Printf("unsupported dict protocol version %s.%s, closing connection", major, minor)
-		fmt.Fprintf(conn, "FUnsupported version\n")
 		return false
 	}
 
-	// fmt.Fprintf writes a formatted string to any io.Writer — conn satisfies
-	// that interface because net.Conn has a Write method. Equivalent to
-	// PrintWriter(socket.getOutputStream()).printf(...) in Java.
-	fmt.Fprintf(conn, "O\t%s\t%s\n", major, minor)
+	if s.Debug {
+		log.Printf("DEBUG HELLO accepted: version %s.%s", major, minor)
+	}
 	return true
 }
 
@@ -177,6 +183,7 @@ func (s *Server) handleLookup(conn net.Conn, line string) {
 	// field wouldn't cause extra splits — equivalent to split("\t", 2) in Kotlin.
 	parts := strings.SplitN(line[1:], "\t", 2)
 	if len(parts) < 1 || parts[0] == "" {
+		//goland:noinspection GoUnhandledErrorResult
 		fmt.Fprintf(conn, "FMalformed command\n")
 		return
 	}
@@ -187,6 +194,7 @@ func (s *Server) handleLookup(conn net.Conn, line string) {
 	azp, alg, kid, ok := parseKey(parts[0])
 	if !ok {
 		log.Printf("malformed lookup key: %q", parts[0])
+		//goland:noinspection GoUnhandledErrorResult
 		fmt.Fprintf(conn, "FMalformed key\n")
 		return
 	}
@@ -196,6 +204,7 @@ func (s *Server) handleLookup(conn net.Conn, line string) {
 	if s.OAuthClientID != "" && azp != s.OAuthClientID {
 		log.Printf("azp %q does not match configured oauth_client_id", azp)
 		end := time.Now()
+		//goland:noinspection GoUnhandledErrorResult
 		fmt.Fprintf(conn, "N%s", timingFields(start, end))
 		return
 	}
@@ -203,6 +212,7 @@ func (s *Server) handleLookup(conn net.Conn, line string) {
 	cert, err := jwks.LookupX5C(s.JWKSUri, kid, alg)
 	if err != nil {
 		log.Printf("JWKS lookup error for kid=%q alg=%q: %v", kid, alg, err)
+		//goland:noinspection GoUnhandledErrorResult
 		fmt.Fprintf(conn, "FUnable to fetch JWKS URL\n")
 		return
 	}
@@ -210,11 +220,23 @@ func (s *Server) handleLookup(conn net.Conn, line string) {
 	end := time.Now()
 
 	if cert == "" {
+		//goland:noinspection GoUnhandledErrorResult
 		fmt.Fprintf(conn, "N%s", timingFields(start, end))
 		return
 	}
 
-	fmt.Fprintf(conn, "O%s%s", dictEscape(cert), timingFields(start, end))
+	// fmt.Sprintf builds the full response string so we can log it before
+	// sending. The value is dict-escaped so Dovecot can safely parse the
+	// newlines and tabs embedded in the PEM block.
+	resp := fmt.Sprintf("O%s%s", dictEscape(cert), timingFields(start, end))
+	if s.Debug {
+		// Log the unescaped key so it is readable in the journal, and the
+		// escaped response so the wire format can be verified.
+		log.Printf("DEBUG key for kid=%q alg=%q:\n%s", kid, alg, cert)
+		log.Printf("DEBUG send (LOOKUP): %q", resp)
+	}
+	//goland:noinspection GoUnhandledErrorResult
+	fmt.Fprint(conn, resp)
 }
 
 // dictEscape applies the Dovecot Dict protocol value escaping rules.
@@ -224,7 +246,7 @@ func (s *Server) handleLookup(conn net.Conn, line string) {
 //	NUL  → \001 + '0'
 //	\t   → \001 + 't'
 //	\r   → \001 + 'r'
-//	\n   → \001 + 'l'
+//	\n   → \001 + 'n'
 func dictEscape(s string) string {
 	// strings.NewReplacer applies all substitutions in a single pass, but
 	// because \001 must be replaced before the others we use a manual builder
@@ -242,7 +264,7 @@ func dictEscape(s string) string {
 		case '\r':
 			sb.WriteString("\x01" + "r")
 		case '\n':
-			sb.WriteString("\x01" + "l")
+			sb.WriteString("\x01" + "n")
 		default:
 			sb.WriteByte(s[i])
 		}

@@ -55,6 +55,11 @@ func main() {
 	// Resolve the socket path from the config file against RUNTIME_DIRECTORY.
 	cfg.SocketPath = resolvePath(cfg.SocketPath, "RUNTIME_DIRECTORY")
 
+	if cfg.Debug {
+		log.Printf("DEBUG config:\n  oidc_url=%q\n  socket_path=%q\n  client_id=%q\n  scopes=%q\n  jwks_uri=%q",
+			cfg.OIDCUrl, cfg.SocketPath, cfg.ClientID, cfg.Scopes, cfg.JWKSUri)
+	}
+
 	major, minor, patch, err := dovecotVersion()
 	if err != nil {
 		log.Fatalf("detecting Dovecot version: %v", err)
@@ -69,12 +74,23 @@ func main() {
 		log.Fatalf("rendering output config: %v", err)
 	}
 
+	if cfg.Debug {
+		rendered, readErr := os.ReadFile(resolvedOutput)
+		if readErr == nil {
+			// Prefix every line with "  |" so the block stands out clearly
+			// among other log entries when scanning the journal.
+			padded := "  |" + strings.ReplaceAll(strings.TrimRight(string(rendered), "\n"), "\n", "\n  |")
+			log.Printf("DEBUG generated oauth2 config (%s):\n%s", resolvedOutput, padded)
+		}
+	}
+
 	// Struct literal with named fields — equivalent to a Kotlin data class
 	// constructor call with named arguments.
 	srv := &dict.Server{
 		SocketPath:    cfg.SocketPath,
 		JWKSUri:       cfg.JWKSUri,
 		OAuthClientID: cfg.ClientID,
+		Debug:         cfg.Debug,
 	}
 
 	// ListenAndServe blocks indefinitely (accept loop). If it ever returns,

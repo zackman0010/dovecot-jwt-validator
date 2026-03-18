@@ -14,10 +14,12 @@ the token introspection endpoint.
 
 ### Config file
 
-Create a config file at `/etc/dovecot-jwks/jwks.conf`. It contains three key=value pairs:
+Create a config file at `/etc/dovecot-jwks/jwks.conf`. It contains the following key=value pairs:
 - `oidc_url`: OIDC configuration URL, provided by your auth server
 - `socket_path`: Path (or filename) for the Unix socket used for communication between Dovecot and the application
-- `client_id`: Optional field for the oAuth Client ID that generated the JWT. If present, the `azp` field on the JWT must match
+- `client_id`: Optional. oAuth Client ID that generated the JWT. If present, the `azp` field on the JWT must match
+- `scopes`: Optional. Space-separated list of scopes to require in the JWT. Defaults to `openid email`
+- `debug`: Optional. Set to `true` to enable verbose logging of config values, the generated Dovecot config, and all socket requests and responses
 
 ### Path resolution
 
@@ -62,7 +64,7 @@ passdb {
 
 ## Reference URLs
 
-- [Dict Protocol](https://doc.dovecot.org/2.4.2/developers/design/dict_protocol.html)
+- [Dict Protocol](https://doc.dovecot.org/2.4.2/developers/design/dict_protocol.html) - Several of the details on this page ended up being wrong. I submitted an [issue](https://github.com/dovecot/documentation/issues/1464) to their documentation repo for it to be fixed.
 - [Local Validation](https://doc.dovecot.org/2.4.2/core/config/auth/databases/oauth2.html#local-validation)
 
 ## AI Disclosure
