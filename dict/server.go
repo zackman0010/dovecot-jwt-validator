@@ -41,6 +41,15 @@ func (s *Server) ListenAndServe() error {
 	}
 	defer ln.Close()
 
+	// Make the socket group-writable so that any process running as the
+	// dovecot group (including Dovecot itself and diagnostic tools) can
+	// connect. The default umask typically produces 0755, which denies
+	// group writes and would prevent Dovecot from connecting if it ever
+	// runs with a non-owner UID in the dovecot group.
+	if err := os.Chmod(s.SocketPath, 0660); err != nil {
+		return fmt.Errorf("chmod socket %s: %w", s.SocketPath, err)
+	}
+
 	log.Printf("listening on %s", s.SocketPath)
 
 	// Infinite accept loop — runs until the process is killed or ln is closed.
@@ -256,21 +265,25 @@ func timingFields(start, end time.Time) string {
 	return fmt.Sprintf("\t%d\t%d\t%d\t%d\n", startSec, startUsec, endSec, endUsec)
 }
 
-// parseKey parses a key in the form /shared/<azp>/<alg>/<kid> and returns its
+// parseKey parses a key in the form shared/<azp>/<alg>/<kid> and returns its
 // components. ok is false if the key does not match the expected structure.
+// A leading slash is stripped if present, as Dovecot omits it.
 //
 // Named return values (azp, alg, kid string, ok bool) are declared here for
 // documentation clarity; they are assigned explicitly in the return statements
 // rather than relying on Go's "naked return" feature.
 func parseKey(key string) (azp, alg, kid string, ok bool) {
-	// Splitting "/shared/foo/RS256/key1" on "/" gives:
-	// ["", "shared", "foo", "RS256", "key1"] — 5 elements with an empty
-	// first element because the string starts with "/".
+	// Dovecot sends "shared/foo/RS256/key1" with no leading slash.
+	// strings.TrimPrefix is a no-op if the prefix is absent, so this
+	// handles both forms safely.
+	key = strings.TrimPrefix(key, "/")
+	// Splitting "shared/foo/RS256/key1" on "/" gives:
+	// ["shared", "foo", "RS256", "key1"] — 4 elements.
 	parts := strings.Split(key, "/")
-	if len(parts) != 5 || parts[0] != "" || parts[1] != "shared" {
+	if len(parts) != 4 || parts[0] != "shared" {
 		return "", "", "", false
 	}
-	azp, alg, kid = parts[2], parts[3], parts[4]
+	azp, alg, kid = parts[1], parts[2], parts[3]
 	if azp == "" || alg == "" || kid == "" {
 		return "", "", "", false
 	}

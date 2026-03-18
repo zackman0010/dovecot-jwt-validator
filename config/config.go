@@ -23,6 +23,7 @@ type Config struct {
 	JWKSUri    string // resolved from the OpenID configuration document
 	SocketPath string
 	ClientID   string // optional; empty means azp validation is skipped
+	Scopes     string // space-separated required scopes; defaults to "openid email"
 }
 
 // Load reads a key=value config file at the given path, fetches the OpenID
@@ -58,11 +59,17 @@ func Load(path string) (*Config, error) {
 
 	// &Config{...} allocates a Config on the heap and returns a pointer to it,
 	// equivalent to Config(...) returning a reference in Kotlin.
+	scopes := values["scopes"]
+	if scopes == "" {
+		scopes = "openid email"
+	}
+
 	return &Config{
 		OIDCUrl:    oidcURL,
 		JWKSUri:    jwksUri,
 		SocketPath: socketPath,
 		ClientID:   values["client_id"], // missing key returns "" (zero value for string)
+		Scopes:     scopes,
 	}, nil
 }
 

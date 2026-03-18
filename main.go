@@ -186,6 +186,7 @@ func renderTemplate(dst string, cfg *config.Config, major, minor int) error {
 	replacer := strings.NewReplacer(
 		"${oidc_url}", cfg.OIDCUrl,
 		"${socket_path}", cfg.SocketPath,
+		"${scopes}", cfg.Scopes,
 	)
 	rendered := replacer.Replace(tmpl)
 
