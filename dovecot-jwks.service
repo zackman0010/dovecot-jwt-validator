@@ -8,9 +8,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/dovecot-dict-proxy \
-    --config /etc/dovecot/jwks.conf \
-    --output /var/dovecot-jwks/dovecot-oauth2.conf.ext
+ExecStart=/usr/local/bin/dovecot-jwks
+
+# systemd creates these directories and sets the corresponding env vars:
+#   CONFIGURATION_DIRECTORY=/etc/dovecot-jwks  (config file location)
+#   STATE_DIRECTORY=/var/lib/dovecot-jwks      (output file location)
+#   RUNTIME_DIRECTORY=/run/dovecot-jwks        (Unix socket location)
+ConfigurationDirectory=dovecot-jwks
+StateDirectory=dovecot-jwks
+RuntimeDirectory=dovecot-jwks
 
 Restart=on-failure
 RestartSec=5s
@@ -19,10 +25,10 @@ RestartSec=5s
 User=dovecot
 Group=dovecot
 
-# Harden the service
+# Harden the service — ProtectSystem=strict is safe because all writable
+# paths are managed by the *Directory directives above.
 PrivateTmp=true
-ProtectSystem=full
-ReadWritePaths=/etc/dovecot
+ProtectSystem=strict
 NoNewPrivileges=true
 
 [Install]

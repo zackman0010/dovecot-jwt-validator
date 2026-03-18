@@ -12,28 +12,53 @@ the token introspection endpoint.
 
 ## Running the application
 
-Create a config file `jwks.conf` in the same directory as the combined binary. The location and name of this file can be configured
-with the `--config` CLI flag.
-This config file contains three key=value pairs:
+### Config file
+
+Create a config file at `/etc/dovecot-jwks/jwks.conf`. It contains three key=value pairs:
 - `oidc_url`: OIDC configuration URL, provided by your auth server
-- `socket_path`: Path to the Unix socket that will be used for communication between Dovecot and the application
+- `socket_path`: Path (or filename) for the Unix socket used for communication between Dovecot and the application
 - `client_id`: Optional field for the oAuth Client ID that generated the JWT. If present, the `azp` field on the JWT must match
 
-On launch, the application will generate a Dovecot configuration file containing the oAuth2 parameters. By default, the file will
-be created at `/etc/dovecot/dovecot-oauth2.conf.ext`. The output path can be configured with the `--output` CLI flag. The main
-Dovecot config file will need to be configured to import this generated config file:
+### Path resolution
+
+The `--config`, `--output`, and `socket_path` values follow the same rule: if the value starts with `/` it is used as-is; otherwise
+it is treated as a filename relative to a directory controlled by an environment variable:
+
+| Flag / config key | Environment variable      | Default directory (systemd) |
+|-------------------|---------------------------|-----------------------------|
+| `--config`        | `CONFIGURATION_DIRECTORY` | `/etc/dovecot-jwks`         |
+| `--output`        | `STATE_DIRECTORY`         | `/var/lib/dovecot-jwks`     |
+| `socket_path`     | `RUNTIME_DIRECTORY`       | `/run/dovecot-jwks`         |
+
+If the environment variable is not set, the path is resolved relative to the working directory.
+
+### systemd service
+
+This repo includes a systemd service file. It sets `ConfigurationDirectory`, `StateDirectory`, and `RuntimeDirectory` to
+`dovecot-jwks`, so systemd creates and manages the directories listed above and exports the environment variables automatically.
+No CLI flags are needed when running under systemd. The service autostarts with the server and declares itself a dependency of
+Dovecot, so Dovecot cannot launch without it.
+
+Install and enable:
+```
+sudo cp dovecot-jwks.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dovecot-jwks
+```
+
+The application runs as the `dovecot` user so the Unix socket is accessible to Dovecot.
+
+### Dovecot configuration
+
+On launch, the application writes a Dovecot OAuth2 config file to the output path (default
+`/var/lib/dovecot-jwks/dovecot-oauth2.conf.ext`). The main Dovecot config must import it:
 ```
 passdb {
   driver = oauth2
   mechanisms = xoauth2 oauthbearer
-  args = /etc/dovecot/dovecot-oauth2.conf.ext
+  args = /var/lib/dovecot-jwks/dovecot-oauth2.conf.ext
 }
 ```
-
-This repo also contains a systemd service file that can be used to set the application up as a service. It will autostart on server
-launch and set itself as a dependency of Dovecot, so that Dovecot cannot launch without it.
-
-The application is expected to run as the same user as Dovecot, by default `dovecot`.
 
 ## Reference URLs
 

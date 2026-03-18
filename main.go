@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -32,19 +33,27 @@ func main() {
 	// flag.String registers a string flag and returns a *string (pointer).
 	// The arguments are: flag name, default value, help text.
 	configPath := flag.String("config", config.DefaultConfigPath, "path to the key=value config file")
-	outputPath := flag.String("output", "/var/dovecot-jwks/dovecot-oauth2.conf.ext", "path to write the rendered Dovecot OAuth2 config")
+	outputPath := flag.String("output", "dovecot-oauth2.conf.ext", "path to write the rendered Dovecot OAuth2 config")
 	// flag.Parse() actually reads os.Args and populates the registered flags.
 	flag.Parse()
 
+	// Resolve relative paths against the systemd-managed directories exposed
+	// via environment variables, so the binary works without explicit flags
+	// when started by systemd.
+	resolvedConfig := resolvePath(*configPath, "CONFIGURATION_DIRECTORY")
+	resolvedOutput := resolvePath(*outputPath, "STATE_DIRECTORY")
+
 	// Go functions commonly return (value, error) pairs instead of throwing
 	// exceptions. The convention is to check err immediately after the call.
-	// *configPath dereferences the pointer returned by flag.String above.
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(resolvedConfig)
 	if err != nil {
 		// log.Fatalf prints the message and calls os.Exit(1) — equivalent to
 		// throwing an unrecovered exception that terminates the process.
 		log.Fatalf("configuration error: %v", err)
 	}
+
+	// Resolve the socket path from the config file against RUNTIME_DIRECTORY.
+	cfg.SocketPath = resolvePath(cfg.SocketPath, "RUNTIME_DIRECTORY")
 
 	major, minor, patch, err := dovecotVersion()
 	if err != nil {
@@ -56,7 +65,7 @@ func main() {
 		log.Fatalf("version check failed: %v", err)
 	}
 
-	if err := renderTemplate(*outputPath, cfg, major, minor); err != nil {
+	if err := renderTemplate(resolvedOutput, cfg, major, minor); err != nil {
 		log.Fatalf("rendering output config: %v", err)
 	}
 
@@ -73,6 +82,19 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// resolvePath returns path unchanged if it is absolute (starts with /);
+// otherwise it is joined with the directory named by envVar, falling back to
+// the current working directory if the environment variable is not set.
+func resolvePath(path, envVar string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	if dir := os.Getenv(envVar); dir != "" {
+		return filepath.Join(dir, path)
+	}
+	return path
 }
 
 // dovecotVersion runs "dovecot --version" and returns the major, minor, and
@@ -135,6 +157,7 @@ func validateDovecotVersion(major, minor, patch int) error {
 	if major == minMajor && minor == minMinor && patch >= minPatch {
 		return nil
 	}
+	//goland:noinspection GoErrorStringFormat
 	return fmt.Errorf(
 		"Dovecot %d.%d.%d is not supported; minimum required version is %d.%d.%d",
 		major, minor, patch, minMajor, minMinor, minPatch,
